@@ -18,15 +18,21 @@
  */
 
 #include <SPI.h>
+#include <EthernetESP32.h>
+// #include "w5500.h"
+#include "./utility/w5500.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include <EthernetESP32.h>
 #include <Adafruit_MAX31865.h>
 #include "driver/spi_slave.h"
 #include "driver/spi_master.h"
 #include "AnhLABV01HardWare.h"
 SPIClass PT100_SPI(HSPI);
 
+// // W5100 controller instance
+// uint8_t W5100Class::chip = 0;
+// uint8_t W5100Class::CH_BASE_MSB;
+// uint8_t W5100Class::ss_pin = 2;
 
 #define PT100_MOSI_PIN 42
 #define PT100_MISO_PIN 41
@@ -59,6 +65,48 @@ static uint16_t port = 12345;
 // Enter the IP address of the server you're connecting to:
 static IPAddress server(192, 168, 137, 5);
 
+void clearSIRs() {  // After a socket IR, SnIR and SIR need to be reset
+  for (int i = 0; i < 8; i++) {
+    W5100.writeSnIR(i, 0xFF);  // Clear socket i interrupt
+  }
+  W5100.writeSIR(0xFF);  // Clear SIR
+}
+
+// disable interrupts for all sockets
+inline void disableSIRs() {
+  W5100.writeSIMR(0x00);
+}
+
+// enable interrupts for all sockets
+inline void enableSIRs() {
+  W5100.writeSIMR(0xFF);
+}
+void printIRstate() {
+  // Conflict/Unreach/PPPoE/MP interrupt register (not used here):
+  //  Serial.print("IR:");
+  //  Serial.print(W5100.readIR(),HEX);
+  //  Serial.print(" IMR:");
+  //  Serial.print(W5100.readIMR(),HEX);
+  // Socket IR registers:
+  Serial.print("SIR:");
+  Serial.print(W5100.readSIR(), HEX);
+  Serial.print(" SIMR:");
+  Serial.print(W5100.readSIMR(), HEX);
+  Serial.print(" SnIR:");
+  for (int i = 0; i < 7; i++) {
+    Serial.print(W5100.readSnIR(i), HEX);
+    Serial.print(",");
+  }
+  Serial.print(W5100.readSnIR(7), HEX);
+  Serial.print(" SnIMR:");
+  for (int i = 0; i < 7; i++) {
+    Serial.print(W5100.readSnIMR(i), HEX);
+    Serial.print(",");
+  }
+  Serial.print(W5100.readSnIMR(7), HEX);
+
+}
+
 void IRAM_ATTR ethISR(void *arg) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
   xEventGroupSetBitsFromISR(xEventGroupReceiceETH, ETH_GET_DATA, &xHigherPriorityTaskWoken);
@@ -73,9 +121,6 @@ void taskETH(void *ptr) {
   // Check for Ethernet hardware present
   if (Ethernet.hardwareStatus() == EthernetNoHardware) {
     Serial.println("Ethernet shield was not found.  Sorry, can't run without hardware. :(");
-    // while (true) {
-    //   delay(1);  // do nothing, no point running without Ethernet hardware
-    // }
   }
   while (Ethernet.linkStatus() == LinkOFF) {
     Serial.println("Ethernet cable is not connected.");
@@ -87,12 +132,19 @@ void taskETH(void *ptr) {
   Serial.println("connecting...");
 
   // if you get a connection, report back via serial:
-  if (client.connect(server, port)) {
-    Serial.println("connected");
-  } else {
-    // if you didn't get a connection to the server:
-    Serial.println("connection failed");
+  while (!client.connect(server, port)) {
+    Serial.print(".");
+delay(500);
+  } 
+    Serial.print("connected");
+
+  //set the Wiznet registers so that the INTn line to goes low when this condition is fulfilled
+  for (int i = 0; i < 8; i++) {
+    W5100.writeSnIMR(i, 0x04);  // Socket IR mask: RECV for all sockets
   }
+  enableSIRs();
+  Serial.print("Register states after  enabling IRs: ");
+  printIRstate();
 
   attachInterruptArg(ETH_INT_PIN, ethISR, NULL, FALLING);
 
@@ -103,10 +155,15 @@ void taskETH(void *ptr) {
     if ((bit & ETH_GET_DATA) != 0) {
       // if there are incoming bytes available
       // from the server, read them and print them:
-      if (client.available()) {
+      disableSIRs();
+      while (client.available()) {
         char c = client.read();
         Serial.print(c);
       }
+      Serial.println("Socket IR received!");
+      printIRstate();
+      clearSIRs();
+      enableSIRs();
     }
     if ((bit & ETH_SEND_DATA) != 0) {
       if (client.connected()) {
@@ -136,7 +193,7 @@ void setup() {
 
   xEventGroupReceiceETH = xEventGroupCreate();
   xTaskCreatePinnedToCore(taskETH, "eth", 4048, NULL, 2, NULL, 1);
-  xTaskCreatePinnedToCore(taskReadSensor, "sensor", 4048, NULL, 1, NULL, 0);
+  // xTaskCreatePinnedToCore(taskReadSensor, "sensor", 4048, NULL, 1, NULL, 0);
 }
 
 void loop() {
