@@ -18,14 +18,15 @@
  */
 
 #include <SPI.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <EthernetESP32.h>
 #include <Adafruit_MAX31865.h>
 #include "driver/spi_slave.h"
 #include "driver/spi_master.h"
-
+#include "AnhLABV01HardWare.h"
 SPIClass PT100_SPI(HSPI);
 
-// #include <Ethernet.h>
 
 #define PT100_MOSI_PIN 42
 #define PT100_MISO_PIN 41
@@ -39,50 +40,36 @@ SPIClass PT100_SPI(HSPI);
 #define ETH_SCK_PIN 18
 #define ETH_INT_PIN 15
 #define ETH_CS_PIN 8
-// The value of the Rref resistor. Use 430.0 for PT100 and 4300.0 for PT1000
 #define RREF 390.0
-// The 'nominal' 0-degrees-C resistance of the sensor
-// 100.0 for PT100, 1000.0 for PT1000
 #define RNOMINAL 100.0
-// Enter a MAC address and IP address for your controller below.
-// The IP address will be dependent on your local network:
-byte mac[] = {
-  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED
-};
-IPAddress ip(192, 168, 137, 6);
-uint16_t port = 12345;
-// Enter the IP address of the server you're connecting to:
-IPAddress server(192, 168, 137, 5);
-// Use software SPI: CS, DI, DO, CLK
+
+#define ETH_GET_DATA (1 << 0)
+#define ETH_SEND_DATA (1 << 1)
 Adafruit_MAX31865 thermo = Adafruit_MAX31865(39, &PT100_SPI);
 
-// Initialize the Ethernet client library
-// with the IP address and port of the server
-// that you want to connect to (port 23 is default for telnet;
-// if you're using Processing's ChatServer, use port 10002):
 EthernetClient client;
+EventGroupHandle_t xEventGroupReceiceETH;
+String stringToETH;
 
-void setup() {
+static byte mac[] = {
+  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED
+};
+static IPAddress ip(192, 168, 137, 6);
+static uint16_t port = 12345;
+// Enter the IP address of the server you're connecting to:
+static IPAddress server(192, 168, 137, 5);
+
+void IRAM_ATTR ethISR(void *arg) {
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  xEventGroupSetBitsFromISR(xEventGroupReceiceETH, ETH_GET_DATA, &xHigherPriorityTaskWoken);
+}
+
+void taskETH(void *ptr) {
+
   SPI.begin(ETH_SCK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, ETH_CS_PIN);
-  PT100_SPI.begin(PT100_SCK_PIN, PT100_MISO_PIN, PT100_MOSI_PIN, PT100_CS1_PIN);
-  // You can use Ethernet.init(pin) to configure the CS pin
-  //Ethernet.init(10);  // Most Arduino shields
-  //Ethernet.init(5);   // MKR ETH Shield
-  //Ethernet.init(0);   // Teensy 2.0
-  //Ethernet.init(20);  // Teensy++ 2.0
-  //Ethernet.init(15);  // ESP8266 with Adafruit FeatherWing Ethernet
-  Ethernet.init(ETH_CS_PIN);     // ESP32 with Adafruit FeatherWing Ethernet
-  thermo.begin(MAX31865_4WIRE);  // set to 2WIRE or 4WIRE as necessary
-
+  Ethernet.init(ETH_CS_PIN);  // ESP32 with Adafruit FeatherWing Ethernet
   // start the Ethernet connection:
   Ethernet.begin(mac, ip);
-
-  // Open serial communications and wait for port to open:
-  Serial.begin(115200);
-  while (!Serial) {
-    delay(10);
-  }
-
   // Check for Ethernet hardware present
   if (Ethernet.hardwareStatus() == EthernetNoHardware) {
     Serial.println("Ethernet shield was not found.  Sorry, can't run without hardware. :(");
@@ -106,24 +93,59 @@ void setup() {
     // if you didn't get a connection to the server:
     Serial.println("connection failed");
   }
+
+  attachInterruptArg(ETH_INT_PIN, ethISR, NULL, FALLING);
+
+  EventBits_t bit = 0;
+
+  while (1) {
+    bit = xEventGroupWaitBits(xEventGroupReceiceETH, ETH_GET_DATA | ETH_SEND_DATA, pdTRUE, pdFALSE, portMAX_DELAY);
+    if ((bit & ETH_GET_DATA) != 0) {
+      // if there are incoming bytes available
+      // from the server, read them and print them:
+      if (client.available()) {
+        char c = client.read();
+        Serial.print(c);
+      }
+    }
+    if ((bit & ETH_SEND_DATA) != 0) {
+      if (client.connected()) {
+        client.print(stringToETH);
+      }
+    }
+
+    delay(10);
+  }
+}
+void taskReadSensor(void *ptr) {
+  PT100_SPI.begin(PT100_SCK_PIN, PT100_MISO_PIN, PT100_MOSI_PIN, PT100_CS1_PIN);
+  thermo.begin(MAX31865_4WIRE);  // set to 2WIRE or 4WIRE as necessary
+  while (1) {
+    Serial.print("Temperature = ");
+    Serial.println(thermo.temperature(RNOMINAL, RREF));
+    delay(1000);
+  }
+}
+
+void setup() {
+  // Open serial communications and wait for port to open:
+  Serial.begin(115200);
+  while (!Serial) {
+    delay(10);
+  }
+
+  xEventGroupReceiceETH = xEventGroupCreate();
+  xTaskCreatePinnedToCore(taskETH, "eth", 4048, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(taskReadSensor, "sensor", 4048, NULL, 1, NULL, 0);
 }
 
 void loop() {
-  Serial.print("Temperature = ");
-  Serial.println(thermo.temperature(RNOMINAL, RREF));
-  // // if there are incoming bytes available
-  // // from the server, read them and print them:
-  if (client.available()) {
-    String str = client.readString();
-  }
 
   // as long as there are bytes in the serial queue,
   // read them and send them out the socket if it's open:
   while (Serial.available() > 0) {
-    char inChar = Serial.read();
-    if (client.connected()) {
-      client.print(inChar);
-    }
+    stringToETH = Serial.readString();
+    xEventGroupSetBits(xEventGroupReceiceETH, ETH_SEND_DATA);
   }
 
   // if the server's disconnected, stop the client:
@@ -131,10 +153,15 @@ void loop() {
     Serial.println();
     Serial.println("disconnecting.");
     client.stop();
-    // do nothing:
-    // while (true) {
-    //   delay(1);
-    // }
+    // if you get a connection, report back via serial:
+    if (client.connect(server, port)) {
+      Serial.println("connected");
+    } else {
+      // if you didn't get a connection to the server:
+      Serial.println("connection failed");
+      delay(1000);
+    }
   }
-  delay(10);
+
+  delay(1);
 }

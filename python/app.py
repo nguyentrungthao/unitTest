@@ -1,5 +1,17 @@
 import socket
+import tkinter as tk
 
+# Tạo cửa sổ chính
+root = tk.Tk()
+root.title("Ứng dụng đầu tiên")
+root.geometry("300x200")
+# Thêm nhãn
+label = tk.Label(root, text="Xin chào, đây là giao diện Tkinter!")
+label.pack()
+
+# Thêm nút
+button = tk.Button(root, text="Nhấn tôi!", command=lambda: print("Bạn đã nhấn nút!"))
+button.pack()
 # Đặt địa chỉ IP và cổng cho server
 HOST = '192.168.137.5'  # Địa chỉ IP Wi-Fi hoặc Ethernet của máy tính
 PORT = 12345            # Cổng bất kỳ (12345 là ví dụ)

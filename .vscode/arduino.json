@@ -1,0 +1,5 @@
+{
+    "port": "COM4",
+    "board": "esp32:esp32:esp32",
+    "sketch": "BoCodeCO2_SPI\\UnitTest\\SPI_communication\\SPI_slave\\SPI_slave.ino"
+}
