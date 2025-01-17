@@ -65,6 +65,8 @@ static uint16_t port = 12345;
 // Enter the IP address of the server you're connecting to:
 static IPAddress server(192, 168, 137, 5);
 
+void vPrintInfo();
+
 void clearSIRs() {  // After a socket IR, SnIR and SIR need to be reset
   for (int i = 0; i < 8; i++) {
     W5100.writeSnIR(i, 0xFF);  // Clear socket i interrupt
@@ -190,6 +192,7 @@ void setup() {
   while (!Serial) {
     delay(10);
   }
+  vPrintInfo();
 
   xEventGroupReceiceETH = xEventGroupCreate();
   xTaskCreatePinnedToCore(taskETH, "eth", 4048, NULL, 2, NULL, 1);

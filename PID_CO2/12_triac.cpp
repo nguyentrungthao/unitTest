@@ -16,20 +16,22 @@ triac::triac(gpio_num_t pin, timer_group_t grp, timer_idx_t idx){
 }
 
 
+
 void triac::configACDETPIN(gpio_num_t acdet_pin) {
     triac::acdet = acdet_pin;
-
-    gpio_config_t acdet_pin_conf = {
-        .pin_bit_mask = (uint64_t)(1ULL << acdet_pin),
-        .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_NEGEDGE,
-    };
-    gpio_config(&acdet_pin_conf);
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(triac::acdet, acdet_intr_handler, NULL);
-    gpio_intr_enable(triac::acdet);
+    pinMode(triac::acdet, INPUT);
+    attachInterruptArg(triac::acdet, acdet_intr_handler, NULL, FALLING);
+    // gpio_config_t acdet_pin_conf = {
+    //     .pin_bit_mask = (uint64_t)(1ULL << acdet_pin),
+    //     .mode         = GPIO_MODE_INPUT,
+    //     .pull_up_en   = GPIO_PULLUP_ENABLE,
+    //     .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    //     .intr_type    = GPIO_INTR_NEGEDGE,
+    // };
+    // gpio_config(&acdet_pin_conf);
+    // gpio_install_isr_service(0);
+    // gpio_isr_handler_add(triac::acdet, acdet_intr_handler, NULL);
+    // gpio_intr_enable(triac::acdet);
 }
 
 
