@@ -1,5 +1,7 @@
 #include "Door.h"
 
+#define PIN_DOOR DOOR_PIN
+
 void DOOR::KhoiTao(void) {
   pinMode(PIN_DOOR, INPUT);
   CoDongMoCua = TrangThai();

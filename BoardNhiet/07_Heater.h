@@ -9,24 +9,26 @@
 #include "cmath"
 
 #include "12_triac.h"
+#include "OnOffHighResolutionTimer.h"
 #include "driver/gpio.h"
 #include "driver/timer.h"
 #include "hal/gpio_types.h"
 #include "hal/timer_types.h"
+#include "AnhLABV01HardWare.h"
+
 // #define DEBUG
 
-#define TRIAC_BUONG_PIN 2
-#define TRIAC_QUAT_PIN 15
-#define TRIAC_CUA_PIN 26
+#define TRIAC_BUONG_PIN TRIAC1_PIN
+#define TRIAC_QUAT_PIN TRIAC2_PIN
+#define TRIAC_CUA_PIN TRIAC3_PIN
+#define TRIAC_SAU_PIN TRIAC4_PIN
 
-#define ACDET_PIN 39
-
-#define MAX_CS_BUONG_PIN 14  // cảm biến PT100 số 1 là cảm biến trong buồng
-#define MAX_CS_VACH_PIN 12   // cảm biến PT100 vách là cảm biến số 3 trên board
-#define MAX_CS_CUA_PIN 27    // cảm biến  PT100 nhiệt trên cửa là cảm biến số 2
-#define MAX_MOSI_PIN 23      // ESP32 OUT ADS IN
-#define MAX_MISO_PIN 19      // ESP32 IN ADS OUT
-#define MAX_CLK_PIN 18
+#define MAX_CS_BUONG_PIN PT100_CS1_PIN  // cảm biến PT100 số 1 là cảm biến trong buồng
+#define MAX_CS_VACH_PIN PT100_CS3_PIN   // cảm biến PT100 vách là cảm biến số 3 trên board
+#define MAX_CS_CUA_PIN PT100_CS2_PIN    // cảm biến  PT100 nhiệt trên cửa là cảm biến số 2
+#define MAX_MOSI_PIN PT100_MOSI_PIN      // ESP32 OUT ADS IN
+#define MAX_MISO_PIN PT100_MISO_PIN      // ESP32 IN ADS OUT
+#define MAX_CLK_PIN PT100_SCK_PIN        // ESP32 CLK ADS CLK
 
 #define _BAT_DIEU_KHIEN_NHIET_DO true
 #define _TAT_DIEU_KHIEN_NHIET_DO false
@@ -138,10 +140,10 @@ public:
   float SaiSoNhietChoPhep = 0.25;  // Nếu nhiệt độ thực tế trong giới hạn +/- 0.25 thì cho giá trị nhiệt thực tế = setpoint luôn.
   float HeSoCalib = 0;             // HeSoCalib = NhietDoChuan - (NhietDoHienThi - HeSoCalib)
   bool CoChoPhepLogDebug = true;   // cờ cho phép log serial0 để debug
-  uint16_t u16ThoiGianGiaNhiet;    // thời gian nhiệt chạy
   uint8_t demOnDinh;               // đếm số lần nhiệt vào sai số -+0.25
-  uint16_t fanPower;               // góc kích triac quy định điện áp cung cấp cho quạt
+  uint32_t fanPower;               // góc kích triac quy định điện áp cung cấp cho quạt
   uint32_t ThoiGianBatQuat, ThoiGianTatQuat;
+  uint32_t offset;
 
   HEATER(void);
   void KhoiTao();
@@ -157,15 +159,12 @@ public:
   float LayNhietDoLoc_CUA() {
     return NhietDoLoc_CUA;
   }
-  float LayThoiGianKichTriac() {
-    return heatPower;
-  }
   float LayNhietDoLoc_VANH() {
     return NhietDoLoc_VANH;
   }
   void DelayTinhToanGiaTriDieuKhien();
   void logDEBUG();
-  
+
 private:
   bool trangThaiDieuKhien;  // trạng thái điều khiển của file heater.cpp
 
@@ -176,8 +175,9 @@ private:
   SimpleKalmanFilter LocCamBienVanh = SimpleKalmanFilter(SAI_SO_DO, SAI_SO_UOC_LUONG, HE_SO_NHIEU);
   SimpleKalmanFilter LocCamBienCua = SimpleKalmanFilter(SAI_SO_DO, SAI_SO_UOC_LUONG, HE_SO_NHIEU);
 
-  triac triacBuong;
-  triac triacCua;
+  HRTOnOffPin triacBuong;
+  HRTOnOffPin triacSau;
+  HRTOnOffPin triacCua;
   triac triacQuat;  // triac điều khiển tốc độ quạt
 
   float NhietDoThucTe;  // nhiệt thực tế trong buồng
@@ -186,22 +186,20 @@ private:
   float NhietDoLoc_CUA;
   float NhietDoLoc_VANH;
 
+  //các biến chạy cho mặt sau của buồng
+  
   // các biến trong hàm ChayQuyTrinhGiaNhiet buồng
   TrangThaiNhiet_t TempState;
   TrangThaiDieuKhienLogic step;
-  int16_t HeatUpTime, CoolDownTime;
-  int16_t heatPower;
-  int16_t giaTriGiaKhauI = 0;  // giá trị giả khâu I trong PID để bù phần nhiệt còn thiếu
+  int32_t HeatUpTime, CoolDownTime;
+  uint32_t HeatUpTimeMatSau;    // thời gian nhiệt chạy
+  int32_t giaTriGiaKhauI = 0;  // giá trị giả khâu I trong PID để bù phần nhiệt còn thiếu
+  int32_t u16ThoiGianGiaNhiet;    // thời gian nhiệt chạy
+
 
   // các biến trong hàm ChayQuyTrinhGiaNhiet cửa
-  int16_t HeatUpTime_CUA, CoolDownTime_CUA;
-  int16_t heatPower_CUA;
-  int16_t u16ThoiGianGiaNhiet_CUA;
-
-  // các biến trong hàm ChayQuyTrinhGiaNhiet cửa
-  int16_t HeatUpTime_VANH, CoolDownTime_VANH;
-  int16_t heatPower_VANH;
-  int16_t u16ThoiGianGiaNhiet_VANH;
+  int32_t HeatUpTime_CUA, CoolDownTime_CUA;
+  int32_t u16ThoiGianGiaNhiet_CUA;
 
   //các biến trong hàm giám sát nhiệt độ cửa
   TrangThaiDieuKhienLogic step_CUA;
@@ -229,7 +227,6 @@ private:
   esp_timer_handle_t tTriacHandle;
   TimerHandle_t TimerLayMauNhietDo;
 
-  uint64_t timerOverflow_Small = 9600;
   bool DoorTriacOnFlag = false;
 };
 

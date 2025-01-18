@@ -1,19 +1,21 @@
 #include "07_Heater.h"
 
+// #define TEST
+// #define TEST_TRIAC
+
 static uint8_t chuKi = 0;
 static uint16_t iLon_CUA = 0;
 static int16_t iNho_CUA = 0;
 static bool Laymau = true;
 static bool Laymau_CUA = true;
-static bool Laymau_VANH = true;
 static float fLayNhietDoThucTe(Adafruit_MAX31865& xPt100);
 
-
 HEATER::HEATER(void)
-  : triacBuong((gpio_num_t)TRIAC_BUONG_PIN, TIMER_GROUP_0, TIMER_0),
-    triacCua((gpio_num_t)TRIAC_CUA_PIN, TIMER_GROUP_0, TIMER_1),
+  : triacBuong((gpio_num_t)TRIAC_BUONG_PIN),
+    triacSau((gpio_num_t)TRIAC_SAU_PIN),
+    triacCua((gpio_num_t)TRIAC_CUA_PIN),
     triacQuat((gpio_num_t)TRIAC_QUAT_PIN, TIMER_GROUP_1, TIMER_0) {
-  this->heatPower = this->fanPower = GIA_TRI_BAT_TRIAC_MIN;  // khởi tạo giá trị lớn nhất để triac không kích nữa
+  this->fanPower = GIA_TRI_BAT_TRIAC_MIN;  // khởi tạo giá trị lớn nhất để triac không kích nữa
   this->HeSoCalib = 0;
   this->trangThaiDieuKhien = _TAT_DIEU_KHIEN_NHIET_DO;
 };
@@ -34,11 +36,11 @@ void HEATER::KhoiTao() {
   for (uint8_t i = 0; i < 5; i++) {
     this->nhietDoLoc = LocCamBienBuong.updateEstimate(fLayNhietDoThucTe(PT100_buong)) + this->HeSoCalib;  //* lọc giá trị đọc
     this->NhietDoLoc_CUA = LocCamBienCua.updateEstimate(fLayNhietDoThucTe(PT100_cua));
-    this->NhietDoLoc_VANH = LocCamBienVanh.updateEstimate(fLayNhietDoThucTe(PT100_vanh));
   }
 
   triacBuong.init();
   triacCua.init();
+  triacSau.init();
   triacQuat.init();
   /** Khởi tạo triac. */
   triac::configACDETPIN((gpio_num_t)ACDET_PIN);
@@ -55,47 +57,52 @@ void HEATER::TASK_TinhToanGiaTriDieuKhien(void* _this) {
   xLastWakeTime = xTaskGetTickCount();
   while (1) {
     pClass->DieuKhienQuat();
-
     pClass->nhietDoLoc = pClass->LocCamBienBuong.updateEstimate(fLayNhietDoThucTe(pClass->PT100_buong)) + pClass->HeSoCalib;  //* lọc giá trị đọc
     pClass->NhietDoLoc_CUA = pClass->LocCamBienCua.updateEstimate(fLayNhietDoThucTe(pClass->PT100_cua));
     pClass->NhietDoLoc_VANH = pClass->LocCamBienVanh.updateEstimate(fLayNhietDoThucTe(pClass->PT100_vanh));
 
     pClass->GiamSatNhietDo();  //* giám sát nhiệt
     pClass->GiamSatNhietDo_CUA();
-    pClass->GiamSatNhietDo_VANH();
-    
+
     pClass->ChayQuyTrinhGiaNhiet();  //* tính giá trị điều khiển và chạy quy trình thời gian bật, tắt và kiểm soát điện áp trên điện trở
     pClass->ChayQuyTrinhGiaNhiet_CUA();
-    pClass->ChayQuyTrinhGiaNhiet_VANH();
 
     //* gán giá trị điều khiển cửa giải thuật ra
-    pClass->triacBuong.SetTimeOverFlow(pClass->heatPower);
-    pClass->triacQuat.SetTimeOverFlow(pClass->heatPower_VANH);
-    pClass->triacCua.SetTimeOverFlow(pClass->heatPower_CUA);
+    pClass->triacQuat.SetTimeOverFlow(pClass->fanPower);
 
     pClass->u16ThoiGianGiaNhiet += 1;  //tăng thời gian chạy //! lưu ý đơn vị dựa vào chu kì enable task này MẶC ĐỊNH Phải là 1s
     pClass->u16ThoiGianGiaNhiet_CUA += 1;
-    pClass->u16ThoiGianGiaNhiet_VANH++;
     pClass->logDEBUG();
+
+    //reset biến
     vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1000));
   }
 }
 
 void HEATER::CaiDatNhietDo(float fSetpointNhiet) {
+  Serial.printf("Cai dat nhiet do: %f\n", fSetpointNhiet);
+  triacBuong.turnOffPin();
+  triacSau.turnOffPin();
+  triacCua.turnOffPin();
   this->fSetpointNhiet = fSetpointNhiet;
-
-  HeatUpTime = HeatUpTime_CUA = HeatUpTime_VANH = 0;
+  HeatUpTime = HeatUpTime_CUA = 0;
   CoolDownTime = 60;
-  CoolDownTime_CUA = CoolDownTime_VANH = 5;
-  this->u16ThoiGianGiaNhiet = this->u16ThoiGianGiaNhiet_CUA = u16ThoiGianGiaNhiet_VANH = 0;
-  heatPower = heatPower_CUA = heatPower_VANH = GIA_TRI_BAT_TRIAC_MIN;
+  CoolDownTime_CUA = 5;
+#ifdef TEST
+  HeatUpTime = HeatUpTime_CUA = 0;
+  CoolDownTime = 10;
+  CoolDownTime_CUA = 10;
+#endif
+  this->u16ThoiGianGiaNhiet = this->u16ThoiGianGiaNhiet_CUA = 0;
 
-  Laymau_CUA = Laymau = Laymau_VANH = true;
-  step = step_CUA = step_VANH = LamLanh;
+  Laymau_CUA = Laymau = true;
+  step = step_CUA = LamLanh;
 }
 void HEATER::TatDieuKhienNhietDo(bool RESET) {
-  triacBuong.TurnOffTriac();
-  triacCua.TurnOffTriac();
+  Serial.println("Tat dieu khien nhiet do");
+  triacBuong.turnOffPin();
+  triacSau.turnOffPin();
+  triacCua.turnOffPin();
   triacQuat.TurnOffTriac();
 
   this->trangThaiDieuKhien = _TAT_DIEU_KHIEN_NHIET_DO;
@@ -104,18 +111,20 @@ void HEATER::TatDieuKhienNhietDo(bool RESET) {
     giaTriGiaKhauI = 0;
   }
 
-  HeatUpTime = HeatUpTime_CUA = HeatUpTime_VANH = 0;
+  HeatUpTime = HeatUpTime_CUA = 0;
   CoolDownTime = 60;
-  CoolDownTime_CUA = CoolDownTime_VANH = 5;
-  this->u16ThoiGianGiaNhiet = this->u16ThoiGianGiaNhiet_CUA = u16ThoiGianGiaNhiet_VANH = 0;
-  heatPower = heatPower_CUA = heatPower_VANH = GIA_TRI_BAT_TRIAC_MIN;
-
-  Laymau_CUA = Laymau = Laymau_VANH = true;
-  step = step_CUA = step_VANH = LamLanh;
+  CoolDownTime_CUA = 5;
+  this->u16ThoiGianGiaNhiet = this->u16ThoiGianGiaNhiet_CUA = 0;
+#ifdef TEST
+  HeatUpTime = HeatUpTime_CUA = 0;
+  CoolDownTime = 10;
+  CoolDownTime_CUA = 10;
+#endif
+  Laymau_CUA = Laymau = true;
+  step = step_CUA = LamLanh;
 }
 void HEATER::BatDieuKhienNhietDo(bool RESET) {
-  triacBuong.TurnOnTriac();
-  triacCua.TurnOnTriac();
+  Serial.println("Bat dieu khien nhiet do");
   triacQuat.TurnOnTriac();
   this->trangThaiDieuKhien = _BAT_DIEU_KHIEN_NHIET_DO;
 
@@ -123,14 +132,16 @@ void HEATER::BatDieuKhienNhietDo(bool RESET) {
     giaTriGiaKhauI = 0;
   }
 
-  HeatUpTime = HeatUpTime_CUA = HeatUpTime_VANH = 0;
+  HeatUpTime = HeatUpTime_CUA = 0;
   CoolDownTime = 60;
-  CoolDownTime_CUA = CoolDownTime_VANH = 5;
-  this->u16ThoiGianGiaNhiet = this->u16ThoiGianGiaNhiet_CUA = u16ThoiGianGiaNhiet_VANH = 0;
-  heatPower = heatPower_CUA = heatPower_VANH = GIA_TRI_BAT_TRIAC_MIN;
-
-  Laymau_CUA = Laymau = Laymau_VANH = true;
-  step = step_CUA = step_VANH = LamLanh;
+  CoolDownTime_CUA = 5;
+  this->u16ThoiGianGiaNhiet = this->u16ThoiGianGiaNhiet_CUA = 0;
+#ifdef TEST
+  CoolDownTime = 10;
+  CoolDownTime_CUA = 10;
+#endif
+  Laymau_CUA = Laymau = true;
+  step = step_CUA = LamLanh;
 }
 
 
@@ -141,20 +152,43 @@ void HEATER::ChayQuyTrinhGiaNhiet() {
   switch (step) {
     case eTinhToanGiaTriDieuKhien:
       GiaiThuat();
+#ifdef TEST
+      CoolDownTime = 10;
+      CoolDownTime_CUA = 10;
+#endif
+      if (this->HeatUpTime > 0) {
+#ifdef TEST_TRIAC
+        this->triacBuong.turnOnPinAndDelayOff(123 + 1000);
+#else
+        this->triacBuong.turnOnPinAndDelayOff(this->HeatUpTime);
+        this->HeatUpTime /= 1000;
+#endif
+      }
+      if (this->HeatUpTimeMatSau > 0) {
+#ifdef TEST_TRIAC
+        this->triacSau.turnOnPinAndDelayOff(124 + 1000);
+#else
+        this->triacSau.turnOnPinAndDelayOff(this->HeatUpTimeMatSau);
+        this->HeatUpTimeMatSau /= 1000;
+
+#endif
+      }
+
       this->u16ThoiGianGiaNhiet = 0;
       step = GiaNhiet;  //TODO chuyển trạng thái hàm
       // break; //TODO để sau khi tính toán xog thực hiện gia nhiệt ngay lập tức
     case GiaNhiet:
-      if ((this->u16ThoiGianGiaNhiet >= this->HeatUpTime) || (this->nhietDoLoc >= this->fSetpointNhiet)) {
+      if ((this->u16ThoiGianGiaNhiet >= this->HeatUpTime + 1) || (this->nhietDoLoc >= this->fSetpointNhiet)) {
         this->u16ThoiGianGiaNhiet = 0;
         if (saiSo <= 0.0f) {
           flagLoDo = true;  // mục đích sau khi hết lố bắt đầu theo dõi tính toán ngay
         }
+        triacBuong.turnOffPin();
+        triacSau.turnOffPin();
         step = LamLanh;  //TODO chuyển trạng thái hàm
       }
       break;
     case LamLanh:
-      this->heatPower = GIA_TRI_BAT_TRIAC_MIN;
       if ((u16ThoiGianGiaNhiet >= CoolDownTime) || (flagLoDo == true && saiSo > 0.0f)) {
         this->u16ThoiGianGiaNhiet = 0;
         flagLoDo = false;
@@ -180,7 +214,6 @@ void HEATER::ChayQuyTrinhGiaNhiet_CUA() {
     case eTinhToanGiaTriDieuKhien:
       this->HeatUpTime_CUA = 0;
       this->CoolDownTime_CUA = 10;
-      this->heatPower_CUA = 9600;
       if (saiSo > 0.5f) {
         coGiaNhiet = false;
         switch (this->TempState_CUA) {
@@ -197,13 +230,11 @@ void HEATER::ChayQuyTrinhGiaNhiet_CUA() {
 
               this->CoolDownTime_CUA = 60;
 
-              this->heatPower_CUA = 3500;  //202V
-
               // tính thời gian kích
-              float VolTriac = DIEN_AP_VAO_HIEU_DUNG * sqrt(1 - ((this->heatPower_CUA - 650) / 10000) + sin(2 * ((this->heatPower_CUA - 650) * PI / 10000)) / (2 * PI));
+              float VolTriac = 220;
 
               float Power = (VolTriac * VolTriac) / TONG_TRO_CUA;
-              this->HeatUpTime_CUA = (uint32_t)(QSum / Power);
+              this->HeatUpTime_CUA = (uint32_t)(QSum * 1000 / Power);
             }
             break;
 
@@ -229,13 +260,11 @@ void HEATER::ChayQuyTrinhGiaNhiet_CUA() {
                 this->CoolDownTime_CUA = 30;
               }
 
-              this->heatPower_CUA = 3500;
-
               // tính thời gian kích
-              float VolTriac = DIEN_AP_VAO_HIEU_DUNG * sqrt(1 - ((this->heatPower - 650) / 10000) + sin(2 * ((this->heatPower - 650) * PI / 10000)) / (2 * PI));
+              float VolTriac = 220;
 
               float Power = (VolTriac * VolTriac) / TONG_TRO_CUA;  //101.7207w
-              this->HeatUpTime_CUA = (uint32_t)(QSum / Power);
+              this->HeatUpTime_CUA = (uint32_t)(QSum * 1000 / Power);
               break;
             }
           default:
@@ -244,125 +273,38 @@ void HEATER::ChayQuyTrinhGiaNhiet_CUA() {
       } else {
         this->HeatUpTime_CUA = 0;
         this->CoolDownTime_CUA = 10;
-        this->heatPower_CUA = 9600;
       }
+
+#ifdef TEST
+      CoolDownTime = 10;
+      CoolDownTime_CUA = 10;
+#endif
+      if (this->HeatUpTime_CUA > 0) {
+#ifdef TEST_TRIAC
+        this->triacCua.turnOnPinAndDelayOff(123);
+#else
+        this->triacCua.turnOnPinAndDelayOff(this->HeatUpTime_CUA);
+        this->HeatUpTime_CUA /= 1000;
+#endif
+      }
+
       step_CUA = GiaNhiet;  //TODO chuyển trạng thái hàm
       // break; //TODO để sau khi tính toán xog thực hiện gia nhiệt ngay lập tức
     case GiaNhiet:
-      if ((this->u16ThoiGianGiaNhiet_CUA > this->HeatUpTime_CUA) || (NhietDoLoc_CUA >= fSetpointChoCua) || (coGiaNhiet == false && saiSo < 0.2f)) {
+      if ((this->u16ThoiGianGiaNhiet_CUA > this->HeatUpTime_CUA + 1) || (NhietDoLoc_CUA >= fSetpointChoCua) || (coGiaNhiet == false && saiSo < 0.2f)) {
         this->u16ThoiGianGiaNhiet_CUA = 0;
         if (saiSo <= 0.0f) {
           flagLoDo = true;  // mục đích sau khi hết lố bắt đầu theo dõi tính toán ngay
         }
+        triacCua.turnOffPin();
         step_CUA = LamLanh;  //TODO chuyển trạng thái hàm
       }
       break;
     case LamLanh:
-      this->heatPower_CUA = GIA_TRI_BAT_TRIAC_MIN;
       if ((u16ThoiGianGiaNhiet_CUA > CoolDownTime_CUA) || (flagLoDo == true && saiSo > 0.0f)) {
         this->u16ThoiGianGiaNhiet_CUA = 0;
         flagLoDo = false;
         step_CUA = eTinhToanGiaTriDieuKhien;  //TODO chuyển trạng thái hàm
-      }
-      break;
-  }
-}
-void HEATER::ChayQuyTrinhGiaNhiet_VANH() {
-
-  static bool coGiaNhiet = false;  // false khi gia nhiệt từ sai số >0.5 mà bị lố
-  static bool flagLoDo = false;
-  float saiSo;
-  // tắt gia nhiệt cửa khi tắt máy hoặc setpoint lớn hơn 60 tức vào chế độ tiệt trùng
-  if (this->trangThaiDieuKhien == _TAT_DIEU_KHIEN_NHIET_DO || fSetpointNhiet > 60.0f) {
-    step_VANH = LamLanh;
-  }
-  saiSo = this->fSetpointChoVanh - this->NhietDoLoc_VANH;
-
-  switch (step_VANH) {
-    case eTinhToanGiaTriDieuKhien:
-      this->HeatUpTime_VANH = 0;
-      this->CoolDownTime_VANH = 10;
-      this->heatPower_VANH = 9600;
-      if (saiSo > 0.5f) {
-        coGiaNhiet = false;
-        switch (this->TempState_VANH) {
-          case NhietGiamNhanh:
-          case NhietGiamCham:
-          case KhongGiaNhiet:
-          case NhietTangCham:
-            {
-              // tính nhiệt lượng
-              float dentaT = saiSo - 0.5f;
-              float nhietLuong = (KHOI_LUONG_VANH * NHIET_DUNG_RIENG_VANH) / HIEU_SUAT_TRUYEN_NHIET_VANH;
-              float QSum = nhietLuong * dentaT;
-
-              this->CoolDownTime_VANH = 60;
-
-              this->heatPower_VANH = 3500;  //202V
-
-              // tính thời gian kích
-              float VolTriac = DIEN_AP_VAO_HIEU_DUNG * sqrt(1 - ((this->heatPower_VANH - 650) / 10000) + sin(2 * ((this->heatPower_VANH - 650) * PI / 10000)) / (2 * PI));
-
-              float Power = (VolTriac * VolTriac) / TONG_TRO_VANH;
-              this->HeatUpTime_VANH = (uint32_t)(QSum / Power);
-            }
-            break;
-
-          default:
-            break;
-        }
-      } else if (saiSo >= 0) {
-        coGiaNhiet = true;
-        switch (this->TempState_VANH) {
-          case NhietGiamNhanh:
-          case NhietGiamCham:
-          case KhongGiaNhiet:
-            {
-              // tính nhiệt lượng
-              float dentaT = saiSo;
-              float nhietLuong = ((KHOI_LUONG_VANH * NHIET_DUNG_RIENG_VANH) / HIEU_SUAT_TRUYEN_NHIET_VANH) / 1.3f;
-
-              float QSum = nhietLuong * dentaT;
-
-              this->CoolDownTime_VANH = 60 - (0.5 - saiSo) * 60;
-              if (this->CoolDownTime_VANH < 30) {
-                this->CoolDownTime_VANH = 30;
-              }
-
-              this->heatPower_VANH = 3500;
-
-              // tính thời gian kích
-              float VolTriac = DIEN_AP_VAO_HIEU_DUNG * sqrt(1 - ((this->heatPower - 650) / 10000) + sin(2 * ((this->heatPower - 650) * PI / 10000)) / (2 * PI));
-
-              float Power = (VolTriac * VolTriac) / TONG_TRO_VANH;  //101.7207w
-              this->HeatUpTime_VANH = (uint32_t)(QSum / Power);
-              break;
-            }
-          default:
-            break;
-        }
-      } else {
-        this->HeatUpTime_VANH = 0;
-        this->CoolDownTime_VANH = 10;
-        this->heatPower_VANH = 9600;
-      }
-      step_VANH = GiaNhiet;  //TODO chuyển trạng thái hàm
-      // break; //TODO để sau khi tính toán xog thực hiện gia nhiệt ngay lập tức
-    case GiaNhiet:
-      if ((this->u16ThoiGianGiaNhiet_VANH > this->HeatUpTime_VANH) || (NhietDoLoc_VANH >= fSetpointChoCua) || (coGiaNhiet == false && saiSo < 0.2f)) {
-        this->u16ThoiGianGiaNhiet_VANH = 0;
-        if (saiSo <= 0.0f) {
-          flagLoDo = true;  // mục đích sau khi hết lố bắt đầu theo dõi tính toán ngay
-        }
-        step_VANH = LamLanh;  //TODO chuyển trạng thái hàm
-      }
-      break;
-    case LamLanh:
-      this->heatPower_VANH = GIA_TRI_BAT_TRIAC_MIN;
-      if ((u16ThoiGianGiaNhiet_VANH > CoolDownTime_VANH) || (flagLoDo == true && saiSo > 0.0f)) {
-        this->u16ThoiGianGiaNhiet_VANH = 0;
-        flagLoDo = false;
-        step_VANH = eTinhToanGiaTriDieuKhien;  //TODO chuyển trạng thái hàm
       }
       break;
   }
@@ -377,7 +319,7 @@ void HEATER::DieuKhienQuat() {
   if (this->trangThaiDieuKhien == _BAT_DIEU_KHIEN_NHIET_DO) {
     tg++;
     if (tg <= ThoiGianBatQuat) {
-      this->fanPower = 4000;
+      this->fanPower = 5000;
     } else if (ThoiGianBatQuat < tg && ThoiGianTatQuat > 0) {
       this->fanPower = 9600;
     }
@@ -404,7 +346,6 @@ void HEATER::GiaiThuat() {
     saiSo = this->fSetpointNhiet - this->nhietDoLoc;
     // Giám sát nhiệt :
     // Biến this->TempState lấy từ hàm GiamSatNhiet()
-    // tùy theo các trạng thái gia nhiet sẽ quy định các khoảng thời gian Làm nóng(this->HeatUpTime) , làm nguội(this->CoolDownTime)  và công suất (this->heatPower)
     if (saiSo > 0.5f) {
       switch (this->TempState) {
         case NhietGiamNhanh:
@@ -436,13 +377,14 @@ void HEATER::GiaiThuat() {
               this->CoolDownTime = 60;
             }
 
-            this->heatPower = 3500;  //202V
 
             // tính thời gian kích
-            float VolTriac = DIEN_AP_VAO_HIEU_DUNG * sqrt(1 - ((this->heatPower - 650) / 10000) + sin(2 * ((this->heatPower - 650) * PI / 10000)) / (2 * PI));
+            // float VolTriac = DIEN_AP_VAO_HIEU_DUNG * sqrt(1 - ((this->heatPower - 650) / 10000) + sin(2 * ((this->heatPower - 650) * PI / 10000)) / (2 * PI));
+            float VolTriac = 220;
 
             float Power = (VolTriac * VolTriac) / TONG_TRO_BUONG;
-            this->HeatUpTime = (uint32_t)(QSum / Power) + i;
+            this->HeatUpTime = (uint32_t)(QSum * 1000 / Power) + i * 500;
+            HeatUpTimeMatSau = HeatUpTime + offset;
             i++;
           }
           break;
@@ -450,7 +392,6 @@ void HEATER::GiaiThuat() {
         case NhietTangNhanh:
           this->HeatUpTime = 0;
           this->CoolDownTime = 30;
-          this->heatPower = 9600;
           break;
       }
     }
@@ -473,16 +414,16 @@ void HEATER::GiaiThuat() {
               this->CoolDownTime = 30;
             }
 
-            this->heatPower = 3500;
 
             // tính thời gian kích
-            float VolTriac = DIEN_AP_VAO_HIEU_DUNG * sqrt(1 - ((this->heatPower - 650) / 10000) + sin(2 * ((this->heatPower - 650) * PI / 10000)) / (2 * PI));
-
+            // float VolTriac = DIEN_AP_VAO_HIEU_DUNG * sqrt(1 - ((this->heatPower - 650) / 10000) + sin(2 * ((this->heatPower - 650) * PI / 10000)) / (2 * PI));
+            float VolTriac = 220;
             float Power = (VolTriac * VolTriac) / TONG_TRO_BUONG;  //101.7207w
             if (giaTriGiaKhauI < 0) {
               giaTriGiaKhauI = 0;
             }
-            this->HeatUpTime = (uint32_t)(QSum / Power) + giaTriGiaKhauI;
+            this->HeatUpTime = (uint32_t)(QSum * 1000 / Power) + giaTriGiaKhauI * 500;
+            HeatUpTimeMatSau = HeatUpTime + offset;
             soLanNhietKhongTangChamTrog3chuKi += 1;
           }
           break;
@@ -490,13 +431,11 @@ void HEATER::GiaiThuat() {
           soLanNhietTangChamTrog3chuKi += 1;
           this->HeatUpTime = 0;
           this->CoolDownTime = 30;
-          this->heatPower = 9600;
           break;
         case NhietTangNhanh:
           soLanNhietTangChamTrog3chuKi += 5;
           this->HeatUpTime = 0;
           this->CoolDownTime = 30;
-          this->heatPower = 9600;
           break;
       }
 
@@ -516,6 +455,8 @@ void HEATER::GiaiThuat() {
       }
       chuKi++;
       i = 0;
+
+
     }
     //----------------------------------------------------lố độ------------------------------------------------//
     else {
@@ -533,7 +474,6 @@ void HEATER::GiaiThuat() {
 
       this->HeatUpTime = 0;
       this->CoolDownTime = 60;
-      this->heatPower = 9600;
 
       i = 0;
     }
@@ -542,8 +482,7 @@ void HEATER::GiaiThuat() {
   else if (this->trangThaiDieuKhien == _TAT_DIEU_KHIEN_NHIET_DO) {
     this->HeatUpTime = 0;
     this->CoolDownTime = 10;
-    this->heatPower = 9600;
-    this->fanPower = 9600;
+    this->fanPower = 0;
     step = LamLanh;
   }
 }
@@ -628,39 +567,6 @@ void HEATER::GiamSatNhietDo_CUA() {
     Laymau_CUA = true;
   }
 }
-void HEATER::GiamSatNhietDo_VANH() {
-  static float preTemp;
-  //*---------------------------------------------- GIÁM SÁT TỐC ĐỘ THAY ĐỔI NHIỆT ĐỘ ----------------------------------------------
-  //*sau khi gia nhiệt xog mới bắt đầu giám sát
-  //* cộng dồn đến khi chuyển ngược về tính toán thì xác định trạng thái nhiệt sau khi chờ tỏa nhiệt
-  if (step_VANH == LamLanh) {
-    if (Laymau_VANH == true) {
-      Laymau_VANH = false;
-      preTemp = this->NhietDoLoc_VANH;
-    }
-  }
-  //* kết thúc làm lạnh qay về tính toán thì tính ra trạng thái nhiệt sau khi theo dõi
-  else if (step_VANH == eTinhToanGiaTriDieuKhien && this->CoolDownTime_VANH != 0) {
-
-    // this->meanTemp = this->SumTemp / this->CoolDownTime;  // lấy giá trị trung bình
-    // this->DeltaTemp = this->pretemp - this->meanTemp;
-    float dentaT = preTemp - this->NhietDoLoc_VANH;
-
-    if (dentaT > 0.008) {
-      this->TempState_VANH = NhietGiamCham;
-    } else if (dentaT > 0.05) {
-      this->TempState_VANH = NhietGiamNhanh;
-    } else if (dentaT < -0.05) {
-      this->TempState_VANH = NhietTangNhanh;
-    } else if (dentaT < -0.008) {
-      this->TempState_VANH = NhietTangCham;
-    } else {
-      this->TempState_VANH = KhongGiaNhiet;
-    }
-
-    Laymau_VANH = true;
-  }
-}
 
 void HEATER::logDEBUG() {
   switch (TempState) {
@@ -691,7 +597,8 @@ void HEATER::logDEBUG() {
   NHIET_SerialPrintf(CoChoPhepLogDebug, "TGGiaNhiet( %u )-", this->HeatUpTime);
   NHIET_SerialPrintf(CoChoPhepLogDebug, "TGLamLanh(%u)-", this->CoolDownTime);
   NHIET_SerialPrintf(CoChoPhepLogDebug, "TGDaChay(%u)-", this->u16ThoiGianGiaNhiet);
-  NHIET_SerialPrintf(CoChoPhepLogDebug, "Triac(%u)-", this->heatPower);
+  NHIET_SerialPrintf(CoChoPhepLogDebug, "TGGiaNhietSau( %u )-", this->HeatUpTimeMatSau);
+  NHIET_SerialPrintf(CoChoPhepLogDebug, "offset( %u )-", this->offset);
   NHIET_SerialPrintf(CoChoPhepLogDebug, "Fan(%lu)-", this->fanPower);
   NHIET_SerialPrintf(CoChoPhepLogDebug, "SP(%0.2f)-", this->fSetpointNhiet);
   NHIET_SerialPrintf(CoChoPhepLogDebug, "Nhiet( %0.3f )", this->nhietDoLoc);
@@ -722,39 +629,8 @@ void HEATER::logDEBUG() {
   NHIET_SerialPrintf(CoChoPhepLogDebug, "TGGiaNhietCUA( %u )-", this->HeatUpTime_CUA);
   NHIET_SerialPrintf(CoChoPhepLogDebug, "TGLamLanhCUA(%u)-", this->CoolDownTime_CUA);
   NHIET_SerialPrintf(CoChoPhepLogDebug, "TGDaChayCUA(%u)-", this->u16ThoiGianGiaNhiet_CUA);
-  NHIET_SerialPrintf(CoChoPhepLogDebug, "TriacCUA(%u)-", this->heatPower_CUA);
   NHIET_SerialPrintf(CoChoPhepLogDebug, "SPCUA(%0.2f)-", this->fSetpointChoCua);
-  NHIET_SerialPrintf(CoChoPhepLogDebug, "NhietCUA( %0.3f )", this->NhietDoLoc_CUA);
-
-  switch (TempState_VANH) {
-    case NhietGiamCham:
-      NHIET_SerialPrintf(CoChoPhepLogDebug, "-GiamCham-");
-      break;
-    case NhietGiamNhanh:
-      NHIET_SerialPrintf(CoChoPhepLogDebug, "-GiamNhanh-");
-      break;
-    case NhietTangNhanh:
-      NHIET_SerialPrintf(CoChoPhepLogDebug, "-TangNhanh-");
-      break;
-    case NhietTangCham:
-      NHIET_SerialPrintf(CoChoPhepLogDebug, "-TangCham-");
-      break;
-    case KhongGiaNhiet:
-      NHIET_SerialPrintf(CoChoPhepLogDebug, "-OnDinh-");
-      break;
-    case KhongXacDinh:
-      NHIET_SerialPrintf(CoChoPhepLogDebug, "-X-");
-      break;
-  }
-  if (this->trangThaiDieuKhien == _BAT_DIEU_KHIEN_NHIET_DO) {
-    this->TempState_VANH = KhongXacDinh;  // log debug xong thì reset giá trị
-  }
-  NHIET_SerialPrintf(CoChoPhepLogDebug, "TGGiaNhietVANH( %u )-", this->HeatUpTime_VANH);
-  NHIET_SerialPrintf(CoChoPhepLogDebug, "TGLamLanhVANH(%u)-", this->CoolDownTime_VANH);
-  NHIET_SerialPrintf(CoChoPhepLogDebug, "TGDaChayVANH(%u)-", this->u16ThoiGianGiaNhiet_VANH);
-  NHIET_SerialPrintf(CoChoPhepLogDebug, "TriacVANH(%u)-", this->heatPower_VANH);
-  NHIET_SerialPrintf(CoChoPhepLogDebug, "SPVANH(%0.2f)-", this->fSetpointChoVanh);
-  NHIET_SerialPrintf(CoChoPhepLogDebug, "NhietVANH( %0.3f )\n", this->NhietDoLoc_VANH);
+  NHIET_SerialPrintf(CoChoPhepLogDebug, "NhietCUA( %0.3f )\n", this->NhietDoLoc_CUA);
 }
 
 static float fLayNhietDoThucTe(Adafruit_MAX31865& xPt100) {
